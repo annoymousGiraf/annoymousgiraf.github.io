@@ -20,6 +20,8 @@
     .panel p { margin-bottom: 10px; color: #4b5563; }
     .panel label { display: flex; align-items: center; gap: 8px; margin: 6px 0; cursor: pointer; user-select: none; }
     .panel input[type="range"] { width: 100%; margin: 4px 0 8px; }
+    #tiltClampNote { font-size: 11px; color: #b45309; line-height: 1.35; margin: 2px 0 8px; min-height: 0; }
+    #tiltClampNote:empty { display: none; }
     .dims { margin-top: 10px; padding-top: 10px; border-top: 1px solid #e5e7eb; font-size: 12px; color: #374151; }
     .dims dt { font-weight: 600; margin-top: 4px; }
     .dims dd { margin-left: 0; color: #6b7280; }
@@ -58,6 +60,7 @@
     <label><input type="checkbox" id="boxTilt" /> Tilt carton for door clearance</label>
     <label for="tiltSlider">Carton tilt (°)</label>
     <input type="range" id="tiltSlider" min="0" max="35" value="0" step="1" />
+    <div id="tiltClampNote" role="status" aria-live="polite"></div>
     <label><input type="checkbox" id="showEnvelope" checked /> 700&nbsp;mm max-width envelope</label>
     <label><input type="checkbox" id="showDims" checked /> Floor dimension guides</label>
     <label><input type="checkbox" id="hoverRefs" /> Hover door / envelope parts</label>
@@ -558,6 +561,7 @@
     bellyCarton.position.copy(BELLY_CARTON_LOCAL);
     cartonPivot.add(bellyCarton);
 
+    const SENSOR_STACK_Z = -0.04;
     const SENSOR_STACK_BASE = liftTop + 0.47;
     const NECK_H = 0.26;
     const HEAD_H = 0.12;
@@ -565,7 +569,7 @@
 
     const sensorStack = new THREE.Group();
     sensorStack.name = 'sensorStack';
-    sensorStack.position.set(0, SENSOR_STACK_BASE, -0.02);
+    sensorStack.position.set(0, SENSOR_STACK_BASE, SENSOR_STACK_Z);
 
     const neck = new THREE.Mesh(
       new THREE.BoxGeometry(0.12, NECK_H, 0.1),
@@ -809,6 +813,7 @@
     const doorOverlay = document.getElementById('doorOverlay');
     const boxTilt = document.getElementById('boxTilt');
     const tiltSlider = document.getElementById('tiltSlider');
+    const tiltClampNote = document.getElementById('tiltClampNote');
     const showEnvelope = document.getElementById('showEnvelope');
     const showDims = document.getElementById('showDims');
     const hoverRefs = document.getElementById('hoverRefs');
@@ -837,13 +842,85 @@
       envelopeEdges.material.opacity = 0.55 * fade;
     }
 
+    const _tiltProbe = new THREE.Vector3();
+
+    /** Sensor-head AABB in robot space (full lift — worst case for belly vs stack). */
+    function sensorHeadAabbRobot() {
+      const sy = liftTop + UPPER_LIFT_OFFSETS.sensor;
+      return {
+        minX: -0.12,
+        maxX: 0.12,
+        minY: sy + NECK_H - 0.01,
+        maxY: sy + NECK_H + HEAD_H + 0.04,
+        minZ: SENSOR_STACK_Z - 0.03,
+        maxZ: SENSOR_STACK_Z + 0.02 + HEAD_D + 0.02,
+      };
+    }
+
+    function pointInsideAabb(p, box, margin) {
+      return (
+        p.x >= box.minX - margin &&
+        p.x <= box.maxX + margin &&
+        p.y >= box.minY - margin &&
+        p.y <= box.maxY + margin &&
+        p.z >= box.minZ - margin &&
+        p.z <= box.maxZ + margin
+      );
+    }
+
+    /** Max carton slider angle before the top-front corner intersects the sensor head. */
+    function computeMaxSafeCartonTiltDeg() {
+      const aabb = sensorHeadAabbRobot();
+      const margin = 0.02;
+      const cornerLocal = new THREE.Vector3(0, BOX.h, BOX.d / 2);
+      const saved = {
+        cp: cartonPivot.rotation.x,
+        br: bellyGroup.rotation.x,
+        bz: bellyGroup.position.z,
+      };
+      let safe = 0;
+      for (let deg = 0; deg <= 35; deg++) {
+        const cartonRad = (deg * Math.PI) / 180;
+        const frameRad = Math.min(cartonRad, FRAME_TILT_MAX_RAD);
+        cartonPivot.rotation.x = -cartonRad;
+        bellyGroup.rotation.x = -frameRad;
+        bellyGroup.position.z = 0.04 + Math.sin(frameRad) * 0.04;
+        robot.updateMatrixWorld(true);
+        _tiltProbe.copy(cornerLocal);
+        bellyCarton.localToWorld(_tiltProbe);
+        if (pointInsideAabb(_tiltProbe, aabb, margin)) break;
+        safe = deg;
+      }
+      cartonPivot.rotation.x = saved.cp;
+      bellyGroup.rotation.x = saved.br;
+      bellyGroup.position.z = saved.bz;
+      robot.updateMatrixWorld(true);
+      return Math.max(safe, 0);
+    }
+
+    const MAX_SAFE_CARTON_TILT_DEG = computeMaxSafeCartonTiltDeg();
+
+    function setTiltClampNote(requestedDeg, appliedDeg) {
+      if (suppressManualTilt || requestedDeg <= appliedDeg) {
+        tiltClampNote.textContent = '';
+        return;
+      }
+      tiltClampNote.textContent =
+        `Tilt limited to ${appliedDeg}° (slider to ${requestedDeg}°) so the carton clears the sensor head.`;
+    }
+
     function applyTilt() {
       let cartonDeg;
+      let requestedDeg = 0;
       if (suppressManualTilt) {
         cartonDeg = demoTiltDeg;
       } else {
-        cartonDeg = boxTilt.checked ? Math.max(Number(tiltSlider.value), 18) : Number(tiltSlider.value);
+        requestedDeg = boxTilt.checked
+          ? Math.max(Number(tiltSlider.value), 18)
+          : Number(tiltSlider.value);
         if (boxTilt.checked && Number(tiltSlider.value) < 18) tiltSlider.value = '18';
+        cartonDeg = Math.min(requestedDeg, MAX_SAFE_CARTON_TILT_DEG);
+        setTiltClampNote(requestedDeg, cartonDeg);
       }
       const cartonRad = (cartonDeg * Math.PI) / 180;
       const frameRad = Math.min(cartonRad, FRAME_TILT_MAX_RAD);
@@ -858,7 +935,7 @@
     }
 
     function applyDemoBellyTilt(deg) {
-      demoTiltDeg = deg;
+      demoTiltDeg = Math.min(deg, MAX_SAFE_CARTON_TILT_DEG);
       const frameRad = Math.min((deg * Math.PI) / 180, FRAME_TILT_MAX_RAD);
       demoBellyZ = 0.04 + Math.sin(frameRad) * 0.04;
       applyTilt();
@@ -1288,7 +1365,7 @@
     showDoor.addEventListener('change', () => { doorGroup.visible = showDoor.checked; });
     doorOverlay.addEventListener('change', () => { overlay.visible = doorOverlay.checked; });
     boxTilt.addEventListener('change', () => {
-      if (boxTilt.checked) tiltSlider.value = '22';
+      if (boxTilt.checked) tiltSlider.value = String(Math.min(22, MAX_SAFE_CARTON_TILT_DEG));
       applyTilt();
     });
     tiltSlider.addEventListener('input', applyTilt);
