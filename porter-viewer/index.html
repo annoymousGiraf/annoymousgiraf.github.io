@@ -1,0 +1,1382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Porter moving robot — 3D prototype</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; font-family: "Segoe UI", system-ui, sans-serif; }
+    body { background: #e8eaed; color: #1f2937; }
+    #canvas-container { position: fixed; inset: 0; }
+    canvas { display: block; width: 100%; height: 100%; }
+    .panel {
+      position: fixed; top: 12px; left: 12px; max-width: 320px;
+      background: rgba(255, 255, 255, 0.94); border: 1px solid #d1d5db;
+      border-radius: 10px; padding: 14px 16px; font-size: 13px; line-height: 1.45;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.08); z-index: 10;
+    }
+    .panel h1 { font-size: 15px; font-weight: 600; margin-bottom: 8px; color: #111827; }
+    .panel p { margin-bottom: 10px; color: #4b5563; }
+    .panel label { display: flex; align-items: center; gap: 8px; margin: 6px 0; cursor: pointer; user-select: none; }
+    .panel input[type="range"] { width: 100%; margin: 4px 0 8px; }
+    .dims { margin-top: 10px; padding-top: 10px; border-top: 1px solid #e5e7eb; font-size: 12px; color: #374151; }
+    .dims dt { font-weight: 600; margin-top: 4px; }
+    .dims dd { margin-left: 0; color: #6b7280; }
+    .hint { position: fixed; bottom: 12px; right: 12px; font-size: 12px; color: #6b7280;
+      background: rgba(255,255,255,0.85); padding: 8px 12px; border-radius: 8px; border: 1px solid #e5e7eb; z-index: 10; }
+    .badge { display: inline-block; background: #f97316; color: #fff; font-size: 10px;
+      padding: 2px 6px; border-radius: 4px; margin-left: 6px; vertical-align: middle; }
+    .demo-block { margin-top: 10px; padding-top: 10px; border-top: 1px solid #e5e7eb; }
+    .demo-block h2 { font-size: 12px; font-weight: 600; margin-bottom: 8px; color: #111827; text-transform: uppercase; letter-spacing: 0.03em; }
+    .demo-row { display: flex; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
+    .demo-row button {
+      flex: 1; min-width: 88px; padding: 7px 12px; font-size: 12px; font-weight: 600;
+      border-radius: 8px; border: 1px solid #d1d5db; cursor: pointer; background: #fff; color: #111827;
+    }
+    .demo-row button.primary { background: #f97316; border-color: #ea580c; color: #fff; }
+    .demo-row button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .demo-row button:not(:disabled):hover { filter: brightness(0.97); }
+    #demoStatus { font-size: 11px; color: #6b7280; margin-top: 4px; min-height: 1.2em; }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="canvas-container"></div>
+  <div class="panel">
+    <h1>Porter removalist robot <span class="badge">prototype</span></h1>
+    <p>Human-scale porter for pantech truck workflows. Scale: 1 scene unit = 1&nbsp;m.</p>
+    <label><input type="checkbox" id="showDoor" checked /> Show AU door frame (820 × 2040&nbsp;mm)</label>
+    <label><input type="checkbox" id="doorOverlay" /> Door-fit overlay (frame + robot silhouette)</label>
+    <label><input type="checkbox" id="boxTilt" /> Tilt carton for door clearance</label>
+    <label for="tiltSlider">Carton tilt (°)</label>
+    <input type="range" id="tiltSlider" min="0" max="35" value="0" step="1" />
+    <label><input type="checkbox" id="showEnvelope" checked /> 700&nbsp;mm max-width envelope</label>
+    <label><input type="checkbox" id="showDims" checked /> Floor dimension guides</label>
+    <label><input type="checkbox" id="hoverRefs" /> Hover door / envelope parts</label>
+    <div class="demo-block">
+      <h2>Demo animation</h2>
+      <div class="demo-row">
+        <button type="button" id="demoRun" class="primary">Run demo</button>
+        <button type="button" id="demoStop" disabled>Stop</button>
+      </div>
+      <label for="demoSpeed">Demo speed</label>
+      <input type="range" id="demoSpeed" min="0.5" max="2" value="1" step="0.1" />
+      <label><input type="checkbox" id="followRobot" /> Follow robot (light camera track)</label>
+      <div id="demoStatus">Stopped — park, pickup, door carry, drop-off loop (~62&nbsp;s at 1×)</div>
+    </div>
+    <dl class="dims">
+      <dt>Robot height</dt><dd>1.75&nbsp;m</dd>
+      <dt>Base track</dt><dd>550&nbsp;mm wide</dd>
+      <dt>Carton (typical)</dt><dd>450 × 400 × 600&nbsp;mm (W×D×H)</dd>
+      <dt>Envelope w/ carton</dt><dd>≤ 700&nbsp;mm wide</dd>
+      <dt>Door opening</dt><dd>820 × 2040&nbsp;mm (AU typical)</dd>
+    </dl>
+  </div>
+  <div id="partTip" style="
+      position: fixed; display: none; z-index: 20; pointer-events: none;
+      max-width: 280px; padding: 10px 12px;
+      background: rgba(17, 24, 39, 0.92); color: #f9fafb; border-radius: 8px;
+      font-size: 12px; line-height: 1.4; box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+      border: 1px solid rgba(249, 115, 22, 0.55);
+    ">
+    <div id="partTipLabel" style="font-weight: 600; font-size: 13px; color: #fdba74; margin-bottom: 4px;"></div>
+    <div id="partTipMaterial" style="color: #e5e7eb;"></div>
+    <div id="partTipNote" style="color: #9ca3af; margin-top: 4px; font-size: 11px;"></div>
+  </div>
+  <div id="partTipFixed" style="
+      position: fixed; top: 12px; right: 12px; z-index: 15; width: 240px;
+      min-height: 72px; padding: 10px 12px;
+      background: rgba(255, 255, 255, 0.94); border: 1px solid #d1d5db;
+      border-radius: 10px; font-size: 12px; line-height: 1.4;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+    ">
+    <div style="font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: #6b7280; margin-bottom: 6px;">Hovered part</div>
+    <div id="partFixLabel" style="font-weight: 600; color: #111827;">—</div>
+    <div id="partFixMaterial" style="color: #4b5563; margin-top: 2px;">Hover a robot part</div>
+    <div id="partFixNote" style="color: #9ca3af; margin-top: 4px; font-size: 11px;"></div>
+  </div>
+  <div class="hint">Drag: orbit · Scroll: zoom · Hover: materials</div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    const ROBOT_HEIGHT = 1.75;
+    const BASE_WIDTH = 0.55;
+    const BASE_DEPTH = 0.62;
+    const BASE_BODY_H = 0.11;
+    const WHEEL_RADIUS = 0.065;
+    const WHEEL_WIDTH = 0.05;
+    const BOX = { w: 0.45, d: 0.40, h: 0.60 };
+    const ENVELOPE_W = 0.70;
+    const DOOR = { w: 0.82, h: 2.04 };
+    const CHEST_Z = 1.05;
+
+    const COL = {
+      body: 0x6b7280,
+      bodyDark: 0x4b5563,
+      bodyLight: 0x9ca3af,
+      accent: 0xf97316,
+      pad: 0x2d3748,
+      box: 0xb8956a,
+      boxEdge: 0x8b6914,
+      door: 0x2563eb,
+      grid: 0xc4c9d0,
+      envelope: 0x22c55e,
+      strut: 0x5c6370,
+      tyre: 0x14181f,
+      tyreBand: 0x0a0d10,
+      rubber: 0x1a1f26,
+    };
+
+    /** Attach MVP build / hardware metadata for raycast tooltips. */
+    function tagPart(obj, label, material, note) {
+      obj.userData = { label, material, note, hoverable: true };
+      return obj;
+    }
+
+    const container = document.getElementById('canvas-container');
+    const partTip = document.getElementById('partTip');
+    const partTipLabel = document.getElementById('partTipLabel');
+    const partTipMaterial = document.getElementById('partTipMaterial');
+    const partTipNote = document.getElementById('partTipNote');
+    const partFixLabel = document.getElementById('partFixLabel');
+    const partFixMaterial = document.getElementById('partFixMaterial');
+    const partFixNote = document.getElementById('partFixNote');
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xe8eaed);
+    scene.fog = new THREE.Fog(0xe8eaed, 8, 22);
+
+    const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.05, 50);
+    camera.position.set(2.35, 1.25, 2.75);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    container.appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0, 0.92, 0.1);
+    controls.enableDamping = true;
+    controls.maxPolarAngle = Math.PI * 0.49;
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+    const sun = new THREE.DirectionalLight(0xffffff, 0.9);
+    sun.position.set(3, 5, 2);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.camera.near = 0.5;
+    sun.shadow.camera.far = 15;
+    sun.shadow.camera.left = -3;
+    sun.shadow.camera.right = 3;
+    sun.shadow.camera.top = 3;
+    sun.shadow.camera.bottom = -3;
+    scene.add(sun);
+    const fill = new THREE.DirectionalLight(0xdbeafe, 0.32);
+    fill.position.set(-2, 1.5, -2);
+    scene.add(fill);
+
+    const floor = new THREE.Mesh(
+      new THREE.PlaneGeometry(12, 12),
+      new THREE.MeshStandardMaterial({ color: 0xd1d5db, roughness: 0.95, metalness: 0 })
+    );
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    scene.add(floor);
+
+    const grid = new THREE.GridHelper(10, 20, COL.grid, 0xe5e7eb);
+    grid.position.y = 0.002;
+    scene.add(grid);
+
+    function mat(color, opts = {}) {
+      const m = new THREE.MeshStandardMaterial({
+        color,
+        roughness: opts.roughness ?? 0.7,
+        metalness: opts.metalness ?? 0.1,
+        transparent: opts.transparent ?? false,
+        opacity: opts.opacity ?? 1,
+      });
+      if (opts.emissive != null) {
+        m.emissive = new THREE.Color(opts.emissive);
+        m.emissiveIntensity = opts.emissiveIntensity ?? 1;
+      }
+      return m;
+    }
+
+    const up = new THREE.Vector3(0, 1, 0);
+
+    function strut(ax, ay, az, bx, by, bz, w, d, material) {
+      const a = new THREE.Vector3(ax, ay, az);
+      const b = new THREE.Vector3(bx, by, bz);
+      const dir = new THREE.Vector3().subVectors(b, a);
+      const len = dir.length();
+      if (len < 1e-6) return null;
+      dir.normalize();
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, len, d), material);
+      mesh.position.copy(a).addScaledVector(dir, len / 2);
+      mesh.quaternion.setFromUnitVectors(up, dir);
+      mesh.castShadow = true;
+      tagPart(mesh, 'Scissor link', '4 mm mild steel, zinc plated', 'Crossed warehouse lift struts, pinned ends');
+      return mesh;
+    }
+
+    function pin(x, y, z, r, material) {
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, 0.055, 12), material);
+      m.rotation.x = Math.PI / 2;
+      m.position.set(x, y, z);
+      m.castShadow = true;
+      tagPart(m, 'Scissor pivot pin', 'M12 bolt + nylon bush', 'Pinned scissor joint (removalist trolley hardware)');
+      return m;
+    }
+
+    function bolt(x, y, z) {
+      const b = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.008, 0.008, 0.018, 8),
+        mat(COL.bodyLight, { metalness: 0.5, roughness: 0.35 })
+      );
+      b.position.set(x, y, z);
+      tagPart(b, 'Platform bolt', 'M8 zinc cap screw', 'Secures scissor top plate to lift table');
+      return b;
+    }
+
+    const robot = new THREE.Group();
+    robot.name = 'porter';
+
+    const deckY = WHEEL_RADIUS + BASE_BODY_H;
+
+    const chassis = new THREE.Mesh(
+      new THREE.BoxGeometry(BASE_WIDTH, BASE_BODY_H, BASE_DEPTH),
+      mat(COL.bodyDark, { roughness: 0.78 })
+    );
+    chassis.position.y = WHEEL_RADIUS + BASE_BODY_H / 2;
+    chassis.castShadow = true;
+    tagPart(chassis, 'Chassis deck', '3 mm steel plate, powder coat RAL 7035', 'Low-profile tug base, houses battery tray');
+    robot.add(chassis);
+
+    const bumper = new THREE.Mesh(
+      new THREE.BoxGeometry(BASE_WIDTH * 0.92, 0.035, 0.04),
+      mat(COL.accent, { roughness: 0.55 })
+    );
+    bumper.position.set(0, WHEEL_RADIUS + 0.02, BASE_DEPTH / 2 - 0.01);
+    bumper.castShadow = true;
+    tagPart(bumper, 'Front bumper strip', 'ABS impact bar, hi-vis orange', 'Operator visibility + minor collision guard');
+    robot.add(bumper);
+
+    const wheelMat = mat(COL.tyre, { roughness: 0.92 });
+    const hubMat = mat(COL.bodyLight, { metalness: 0.25, roughness: 0.45 });
+    const bandMat = mat(COL.tyreBand, { roughness: 0.96 });
+    const insetX = 0.04;
+    const insetZ = 0.05;
+    const wheelCorners = [
+      [-BASE_WIDTH / 2 + insetX, BASE_DEPTH / 2 - insetZ],
+      [BASE_WIDTH / 2 - insetX, BASE_DEPTH / 2 - insetZ],
+      [-BASE_WIDTH / 2 + insetX, -BASE_DEPTH / 2 + insetZ],
+      [BASE_WIDTH / 2 - insetX, -BASE_DEPTH / 2 + insetZ],
+    ];
+    wheelCorners.forEach(([x, z], i) => {
+      const fork = new THREE.Mesh(
+        new THREE.BoxGeometry(0.07, 0.09, 0.07),
+        mat(COL.bodyDark)
+      );
+      fork.position.set(x, WHEEL_RADIUS + 0.04, z);
+      fork.castShadow = true;
+      tagPart(fork, 'Castor fork', '3 mm steel, powder coat', '100 mm swivel castor yoke');
+      robot.add(fork);
+
+      const tyre = new THREE.Mesh(
+        new THREE.TorusGeometry(WHEEL_RADIUS, WHEEL_WIDTH * 0.42, 16, 36),
+        wheelMat
+      );
+      tyre.rotation.y = Math.PI / 2;
+      tyre.position.set(x, WHEEL_RADIUS, z);
+      tyre.castShadow = true;
+      tagPart(tyre, 'Wheel tyre', 'PU tyre on nylon hub, 100 mm castor', 'Shop-floor friendly; non-marking polyurethane');
+
+      const treadBand = new THREE.Mesh(
+        new THREE.TorusGeometry(WHEEL_RADIUS, WHEEL_WIDTH * 0.2, 12, 36),
+        bandMat
+      );
+      treadBand.rotation.y = Math.PI / 2;
+      treadBand.position.set(x, WHEEL_RADIUS, z);
+      tagPart(treadBand, 'Tyre tread band', 'Black PU outer band', 'Slightly rounded contact patch');
+
+      const hub = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.022, 0.022, WHEEL_WIDTH + 0.008, 16),
+        hubMat
+      );
+      hub.rotation.z = Math.PI / 2;
+      hub.position.set(x, WHEEL_RADIUS, z);
+      tagPart(hub, 'Wheel hub', 'Glass-filled nylon', 'Pressed bearing bore');
+
+      const wheelGrp = new THREE.Group();
+      wheelGrp.add(tyre, treadBand, hub);
+      robot.add(wheelGrp);
+    });
+
+    const beaconBaseY = WHEEL_RADIUS + BASE_BODY_H - 0.01;
+    const beaconPost = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.018, 0.022, 0.12, 12),
+      mat(COL.bodyDark, { metalness: 0.2 })
+    );
+    beaconPost.position.set(BASE_WIDTH / 2 - 0.06, beaconBaseY + 0.06, -BASE_DEPTH / 2 + 0.08);
+    beaconPost.castShadow = true;
+    tagPart(beaconPost, 'Beacon mount', 'Steel stud on chassis corner', 'Stack-light bracket, wired to PLC');
+    robot.add(beaconPost);
+
+    const beaconLens = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.038, 0.042, 0.065, 20),
+      mat(COL.accent, { roughness: 0.35, metalness: 0.15 })
+    );
+    beaconLens.position.set(BASE_WIDTH / 2 - 0.06, beaconBaseY + 0.14, -BASE_DEPTH / 2 + 0.08);
+    beaconLens.castShadow = true;
+    tagPart(beaconLens, 'Beacon lens', 'Amber stack light polycarbonate dome', 'RUN / fault indication for yard crew');
+    robot.add(beaconLens);
+
+    const beaconCap = new THREE.Mesh(
+      new THREE.SphereGeometry(0.04, 16, 12, 0, Math.PI * 2, 0, Math.PI / 2),
+      mat(COL.accent, { emissive: 0xea580c, emissiveIntensity: 0.35, roughness: 0.3 })
+    );
+    beaconCap.position.set(BASE_WIDTH / 2 - 0.06, beaconBaseY + 0.175, -BASE_DEPTH / 2 + 0.08);
+    tagPart(beaconCap, 'Beacon dome', 'Polycarbonate amber lens', 'IP54 stack-light top');
+    robot.add(beaconCap);
+
+    const liftBottom = deckY;
+    const liftTop = 0.88;
+    const scissorMat = mat(COL.strut, { roughness: 0.65, metalness: 0.15 });
+    const pinMat = mat(COL.bodyLight, { metalness: 0.35, roughness: 0.4 });
+
+    const scissor = new THREE.Group();
+    scissor.name = 'scissor';
+
+    const trackW = 0.28;
+    const trackD = 0.08;
+    [-1, 1].forEach((side) => {
+      const rail = new THREE.Mesh(
+        new THREE.BoxGeometry(0.042, liftTop - liftBottom + 0.08, 0.042),
+        mat(COL.bodyLight, { metalness: 0.35, roughness: 0.5 })
+      );
+      rail.position.set(side * trackW / 2, (liftBottom + liftTop) / 2, -0.06);
+      rail.castShadow = true;
+      tagPart(rail, 'Mast rail', '40×40 aluminium extrusion, anodised', 'Telescopic column guide, bolted to deck');
+      scissor.add(rail);
+    });
+
+    const stages = 3;
+    for (let s = 0; s < stages; s++) {
+      const t0 = s / stages;
+      const t1 = (s + 1) / stages;
+      const y0 = liftBottom + (liftTop - liftBottom) * t0;
+      const y1 = liftBottom + (liftTop - liftBottom) * t1;
+      const spread0 = 0.06 + t0 * 0.08;
+      const spread1 = 0.06 + t1 * 0.08;
+      const z = 0.02;
+
+      const bl = [-spread0, y0, z];
+      const br = [spread0, y0, z];
+      const tl = [-spread1, y1, z];
+      const tr = [spread1, y1, z];
+
+      for (const [s1, s2] of [[bl, tr], [br, tl]]) {
+        const bar = strut(s1[0], s1[1], s1[2], s2[0], s2[1], s2[2], 0.028, 0.038, scissorMat);
+        if (bar) scissor.add(bar);
+      }
+
+      [bl, br, tl, tr].forEach(([x, y, zi]) => scissor.add(pin(x, y, zi, 0.022, pinMat)));
+      const crossY = (y0 + y1) / 2;
+      scissor.add(pin(0, crossY, z, 0.026, pinMat));
+    }
+
+    const columnH = liftTop - liftBottom;
+    const outerCol = new THREE.Mesh(
+      new THREE.BoxGeometry(0.16, columnH, 0.14),
+      mat(COL.body, { roughness: 0.62 })
+    );
+    outerCol.position.set(0, liftBottom + columnH / 2, -0.04);
+    outerCol.castShadow = true;
+    tagPart(outerCol, 'Lift column shell', '2 mm steel wrapper, RAL 7035', 'Covers scissor pack and limit switches');
+    scissor.add(outerCol);
+
+    const innerCol = new THREE.Mesh(
+      new THREE.BoxGeometry(0.1, columnH * 0.88, 0.09),
+      mat(COL.bodyLight, { metalness: 0.2 })
+    );
+    innerCol.position.set(0, liftBottom + columnH * 0.46, -0.04);
+    innerCol.castShadow = true;
+    tagPart(innerCol, 'Inner mast sleeve', 'Anodised aluminium channel', 'Slides on linear bearings');
+    scissor.add(innerCol);
+
+    const platform = new THREE.Mesh(
+      new THREE.BoxGeometry(0.42, 0.04, 0.36),
+      mat(COL.bodyDark)
+    );
+    platform.position.set(0, liftTop, 0.02);
+    platform.castShadow = true;
+    tagPart(platform, 'Scissor top plate', '4 mm steel, zinc plated', 'Lift table — ties into torso shoulder block');
+    scissor.add(platform);
+
+    const boltOffsets = [
+      [-0.14, 0.1], [0.14, 0.1], [-0.14, -0.1], [0.14, -0.1],
+      [0, 0.14], [0, -0.14],
+    ];
+    boltOffsets.forEach(([bx, bz]) => {
+      scissor.add(bolt(bx, liftTop + 0.022, 0.02 + bz));
+    });
+
+    robot.add(scissor);
+
+    const shoulders = new THREE.Mesh(
+      new THREE.BoxGeometry(0.44, 0.1, 0.32),
+      mat(COL.body)
+    );
+    shoulders.position.set(0, liftTop + 0.06, -0.02);
+    shoulders.castShadow = true;
+    tagPart(shoulders, 'Shoulder deck', '3 mm steel, powder coat', 'Torso interface above scissor table');
+    robot.add(shoulders);
+
+    const chest = new THREE.Mesh(
+      new THREE.BoxGeometry(0.4, 0.38, 0.26),
+      mat(COL.body)
+    );
+    chest.position.set(0, liftTop + 0.28, -0.04);
+    chest.castShadow = true;
+    tagPart(chest, 'Torso / chest', '3 mm steel panels + cable loom', 'Controller bay and belly actuator mounts');
+    robot.add(chest);
+
+    const strip = new THREE.Mesh(
+      new THREE.BoxGeometry(0.28, 0.025, 0.03),
+      mat(COL.accent, { emissive: 0xf97316, emissiveIntensity: 0.45 })
+    );
+    strip.position.set(0, liftTop + 0.42, 0.1);
+    tagPart(strip, 'Status LED strip', 'RGBW LED in polycarbonate diffuser', 'Job state / e-stop ring visibility');
+    robot.add(strip);
+
+    const bellyGroup = new THREE.Group();
+    bellyGroup.name = 'belly';
+    bellyGroup.position.set(0, CHEST_Z, 0.04);
+    robot.add(bellyGroup);
+
+    const backPlate = new THREE.Mesh(
+      new THREE.BoxGeometry(0.46, 0.52, 0.05),
+      mat(COL.bodyDark)
+    );
+    backPlate.position.set(0, 0.02, -0.12);
+    backPlate.castShadow = true;
+    tagPart(backPlate, 'Belly back plate', '2 mm aluminium, anodised', 'Stiffens U-tray and actuator anchor');
+    bellyGroup.add(backPlate);
+
+    const padMat = mat(COL.pad, { roughness: 0.92 });
+    const trayFloor = new THREE.Mesh(
+      new THREE.BoxGeometry(0.48, 0.04, 0.36),
+      padMat
+    );
+    trayFloor.position.set(0, -0.22, 0.06);
+    trayFloor.castShadow = true;
+    tagPart(trayFloor, 'Belly U-tray floor', '2 mm aluminium + EVA clamp pads', 'Soft contact surface for cartons');
+    bellyGroup.add(trayFloor);
+
+    const wallH = 0.26;
+    const wallZ = 0.08;
+    [-1, 1].forEach((side) => {
+      const wall = new THREE.Mesh(
+        new THREE.BoxGeometry(0.05, wallH, 0.34),
+        mat(COL.body)
+      );
+      wall.position.set(side * 0.235, -0.1, wallZ);
+      wall.castShadow = true;
+      tagPart(wall, 'Belly side rail', '2 mm aluminium extrusion', 'U-tray sidewall — guides carton stack');
+      bellyGroup.add(wall);
+      const sidePad = new THREE.Mesh(
+        new THREE.BoxGeometry(0.025, 0.2, 0.3),
+        padMat
+      );
+      sidePad.position.set(side * 0.21, -0.08, wallZ);
+      tagPart(sidePad, 'EVA clamp pad', '40 Shore A EVA, adhesive backed', 'Side grip without carton crush');
+      bellyGroup.add(sidePad);
+    });
+
+    const clampLip = new THREE.Mesh(
+      new THREE.BoxGeometry(0.5, 0.06, 0.04),
+      mat(COL.accent, { roughness: 0.5 })
+    );
+    clampLip.position.set(0, -0.08, 0.24);
+    tagPart(clampLip, 'Clamp lip bar', 'Nylon facing on steel edge', 'Front retention lip for forward carry');
+    bellyGroup.add(clampLip);
+
+    function buildCarton(name = 'carton') {
+      const carton = new THREE.Group();
+      carton.name = name;
+      const boxMesh = new THREE.Mesh(
+        new THREE.BoxGeometry(BOX.w, BOX.h, BOX.d),
+        mat(COL.box, { roughness: 0.9 })
+      );
+      boxMesh.position.set(0, BOX.h / 2, 0);
+      boxMesh.castShadow = true;
+      tagPart(boxMesh, 'Carton', 'Double-wall corrugated 450×400×600', 'Typical removalist tea-chest / linen box');
+      carton.add(boxMesh);
+      const edge = new THREE.LineSegments(
+        new THREE.EdgesGeometry(boxMesh.geometry),
+        new THREE.LineBasicMaterial({ color: COL.boxEdge, transparent: true, opacity: 0.65 })
+      );
+      edge.position.copy(boxMesh.position);
+      carton.add(edge);
+      const tape = new THREE.Mesh(
+        new THREE.BoxGeometry(BOX.w * 1.01, 0.04, BOX.d * 1.01),
+        mat(0xd4c4a8, { roughness: 0.95 })
+      );
+      tape.position.set(0, BOX.h * 0.12 + BOX.h / 2, 0);
+      tagPart(tape, 'Packing tape', 'PP filament tape', 'Cross-seal on carton lid');
+      carton.add(tape);
+      const boxLabel = new THREE.Mesh(
+        new THREE.BoxGeometry(0.12, 0.08, 0.008),
+        mat(0xf5f0e6, { roughness: 0.95 })
+      );
+      boxLabel.position.set(0, 0.12 + BOX.h / 2, BOX.d / 2 + 0.002);
+      tagPart(boxLabel, 'Room label', 'Paper sticker + marker', 'Removalist inventory tag');
+      carton.add(boxLabel);
+      return carton;
+    }
+
+    const BELLY_CARTON_LOCAL = new THREE.Vector3(0, 0.02, 0.14);
+
+    const bellyCarton = buildCarton('bellyCarton');
+    bellyCarton.position.copy(BELLY_CARTON_LOCAL);
+    bellyGroup.add(bellyCarton);
+
+    const SENSOR_STACK_BASE = liftTop + 0.47;
+    const NECK_H = 0.26;
+    const HEAD_H = 0.12;
+    const HEAD_D = 0.14;
+
+    const sensorStack = new THREE.Group();
+    sensorStack.name = 'sensorStack';
+    sensorStack.position.set(0, SENSOR_STACK_BASE, -0.02);
+
+    const neck = new THREE.Mesh(
+      new THREE.BoxGeometry(0.12, NECK_H, 0.1),
+      mat(COL.bodyDark, { roughness: 0.68 })
+    );
+    neck.position.set(0, NECK_H / 2, 0);
+    neck.castShadow = true;
+    tagPart(neck, 'Sensor neck', '40×40 aluminium, anodised', 'Mast strut — chest to sensor head (contiguous stack)');
+    sensorStack.add(neck);
+
+    const head = new THREE.Mesh(
+      new THREE.BoxGeometry(0.2, HEAD_H, HEAD_D),
+      mat(0x374151, { roughness: 0.75 })
+    );
+    head.position.set(0, NECK_H + HEAD_H / 2, 0.02);
+    head.castShadow = true;
+    tagPart(head, 'Sensor head', 'IP65 ABS enclosure (optional camera)', '2D lidar window + RGB option for nav');
+    sensorStack.add(head);
+
+    const headWindow = new THREE.Mesh(
+      new THREE.BoxGeometry(0.14, 0.04, 0.02),
+      mat(0x1e293b, { metalness: 0.4, roughness: 0.2 })
+    );
+    headWindow.position.set(0, NECK_H + HEAD_H / 2 - 0.01, 0.02 + HEAD_D / 2 + 0.005);
+    tagPart(headWindow, 'Lidar window', 'Polycarbonate IR-transparent', 'Spinning or solid-state lidar aperture');
+    sensorStack.add(headWindow);
+
+    robot.add(sensorStack);
+
+    const UPPER_LIFT_OFFSETS = {
+      shoulders: 0.06,
+      chest: 0.28,
+      strip: 0.42,
+      belly: 0.17,
+      sensor: 0.47,
+    };
+
+    function applyLiftRatio(r) {
+      const t = THREE.MathUtils.clamp(r, 0, 1);
+      const h = liftBottom + t * (liftTop - liftBottom);
+      platform.position.y = h;
+      shoulders.position.y = h + UPPER_LIFT_OFFSETS.shoulders;
+      chest.position.y = h + UPPER_LIFT_OFFSETS.chest;
+      strip.position.y = h + UPPER_LIFT_OFFSETS.strip;
+      bellyGroup.position.y = h + UPPER_LIFT_OFFSETS.belly;
+      sensorStack.position.y = h + UPPER_LIFT_OFFSETS.sensor;
+    }
+    applyLiftRatio(1);
+
+    scene.add(robot);
+
+    const dropZone = new THREE.Group();
+    dropZone.name = 'dropZone';
+    dropZone.position.set(0.55, 0, -1.75);
+    const dropPad = new THREE.Mesh(
+      new THREE.BoxGeometry(0.72, 0.02, 0.72),
+      mat(COL.accent, { roughness: 0.85, emissive: 0xea580c, emissiveIntensity: 0.12 })
+    );
+    dropPad.position.y = 0.011;
+    dropPad.receiveShadow = true;
+    tagPart(dropPad, 'Drop zone pad', 'Marked floor tape + EVA landing', 'Unload staging — demo leaves carton here');
+    dropPad.userData.hoverable = false;
+    dropZone.add(dropPad);
+    scene.add(dropZone);
+
+    const PICKUP_BOX = { x: -2.32, z: 0.38 };
+    const APPROACH_STANDOFF = 0.35;
+    const BELLY_FORWARD = 0.18;
+    const TURN_THRESHOLD = 0.12;
+    const PICKUP_SLIDE_S = 0.4;
+    const DROP_SLIDE_S = 0.35;
+
+    function bellyForwardFromRot(rot) {
+      return { x: Math.sin(rot), z: Math.cos(rot) };
+    }
+
+    function approachStopFacingBox(box, faceRot) {
+      const f = bellyForwardFromRot(faceRot);
+      return {
+        x: box.x - f.x * (APPROACH_STANDOFF + BELLY_FORWARD),
+        z: box.z - f.z * (APPROACH_STANDOFF + BELLY_FORWARD),
+        rot: faceRot,
+      };
+    }
+
+    const PICKUP_FACE_ROT = -Math.PI / 2;
+    const PICK_APPROACH = approachStopFacingBox(PICKUP_BOX, PICKUP_FACE_ROT);
+
+    const floorPickupCarton = buildCarton('floorPickup');
+    floorPickupCarton.position.set(PICKUP_BOX.x, 0, PICKUP_BOX.z);
+    floorPickupCarton.visible = false;
+    scene.add(floorPickupCarton);
+
+    const floorRestCarton = buildCarton('floorRest');
+    floorRestCarton.position.set(-2.05, 0, -0.92);
+    scene.add(floorRestCarton);
+
+    const envelope = new THREE.Mesh(
+      new THREE.BoxGeometry(ENVELOPE_W, ROBOT_HEIGHT * 0.92, 0.95),
+      mat(COL.envelope, { transparent: true, opacity: 0.12, roughness: 1 })
+    );
+    envelope.position.set(0, ROBOT_HEIGHT * 0.46, 0.35);
+    envelope.name = 'envelope';
+    envelope.userData = {
+      label: '700 mm envelope',
+      material: 'Virtual clearance guide (not hardware)',
+      note: 'Max width with carton forward for door approach',
+      hoverable: false,
+    };
+    scene.add(envelope);
+    const envelopeEdges = new THREE.LineSegments(
+      new THREE.EdgesGeometry(envelope.geometry),
+      new THREE.LineBasicMaterial({ color: COL.envelope, transparent: true, opacity: 0.55 })
+    );
+    envelope.add(envelopeEdges);
+
+    const doorGroup = new THREE.Group();
+    doorGroup.name = 'door';
+    doorGroup.position.set(1.35, 0, 0);
+
+    const frameT = 0.05;
+    const doorMat = mat(COL.door, { roughness: 0.5, metalness: 0.15 });
+    const jambL = new THREE.Mesh(new THREE.BoxGeometry(frameT, DOOR.h, frameT), doorMat);
+    jambL.position.set(-DOOR.w / 2, DOOR.h / 2, 0);
+    tagPart(jambL, 'Door jamb (ref)', 'Timber / aluminium house frame', 'AU typical 820 mm clear width');
+    jambL.userData.hoverable = false;
+    const jambR = jambL.clone();
+    jambR.position.x = DOOR.w / 2;
+    jambR.userData = { ...jambL.userData };
+    const lintel = new THREE.Mesh(new THREE.BoxGeometry(DOOR.w + frameT * 2, frameT, frameT), doorMat);
+    lintel.position.set(0, DOOR.h, 0);
+    tagPart(lintel, 'Door lintel (ref)', 'House frame timber', '2040 mm typical opening height');
+    lintel.userData.hoverable = false;
+    const sill = lintel.clone();
+    sill.position.y = frameT / 2;
+    sill.scale.set(1, 0.6, 1);
+    sill.userData = { ...lintel.userData, label: 'Door sill (ref)' };
+    doorGroup.add(jambL, jambR, lintel, sill);
+
+    const opening = new THREE.Mesh(
+      new THREE.PlaneGeometry(DOOR.w, DOOR.h),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.25, side: THREE.DoubleSide })
+    );
+    opening.position.set(0, DOOR.h / 2, 0.001);
+    opening.userData = { hoverable: false };
+    doorGroup.add(opening);
+
+    const doorLabel = makeLabelSprite('820 × 2040 mm');
+    doorLabel.position.set(0, DOOR.h + 0.12, 0);
+    doorLabel.scale.set(0.9, 0.45, 1);
+    doorGroup.add(doorLabel);
+    scene.add(doorGroup);
+
+    const dimGroup = new THREE.Group();
+    dimGroup.name = 'dimensions';
+    function dimLine(x0, z0, x1, z1, color = 0x6b7280) {
+      const geo = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(x0, 0.01, z0),
+        new THREE.Vector3(x1, 0.01, z1),
+      ]);
+      dimGroup.add(new THREE.Line(geo, new THREE.LineBasicMaterial({ color })));
+    }
+    dimLine(-BASE_WIDTH / 2, 0.85, BASE_WIDTH / 2, 0.85);
+    const baseLabel = makeLabelSprite('550 mm base');
+    baseLabel.position.set(0, 0.08, 0.85);
+    baseLabel.scale.set(0.55, 0.28, 1);
+    dimGroup.add(baseLabel);
+    dimLine(-ENVELOPE_W / 2, -0.55, ENVELOPE_W / 2, -0.55, COL.envelope);
+    const envLabel = makeLabelSprite('700 mm envelope');
+    envLabel.position.set(0, 0.08, -0.55);
+    envLabel.scale.set(0.65, 0.28, 1);
+    dimGroup.add(envLabel);
+    scene.add(dimGroup);
+
+    function makeLabelSprite(text) {
+      const c = document.createElement('canvas');
+      const ctx = c.getContext('2d');
+      c.width = 512;
+      c.height = 128;
+      ctx.fillStyle = 'rgba(255,255,255,0.92)';
+      ctx.strokeStyle = '#9ca3af';
+      ctx.lineWidth = 3;
+      roundRect(ctx, 8, 8, c.width - 16, c.height - 16, 12);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#111827';
+      ctx.font = 'bold 42px system-ui,sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, c.width / 2, c.height / 2);
+      const tex = new THREE.CanvasTexture(c);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      const matS = new THREE.SpriteMaterial({ map: tex, transparent: true });
+      return new THREE.Sprite(matS);
+    }
+
+    function roundRect(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+
+    const dropLabel = makeLabelSprite('Drop zone');
+    dropLabel.position.set(0.55, 0.12, -1.75);
+    dropLabel.scale.set(0.55, 0.28, 1);
+    scene.add(dropLabel);
+
+    const approachMark = new THREE.Group();
+    approachMark.name = 'pickupApproachLine';
+    const ap0 = new THREE.Vector3(PICK_APPROACH.x, 0.012, PICK_APPROACH.z);
+    const ap1 = new THREE.Vector3(PICKUP_BOX.x, 0.012, PICKUP_BOX.z);
+    const approachGeo = new THREE.BufferGeometry().setFromPoints([ap0, ap1]);
+    approachMark.add(
+      new THREE.Line(approachGeo, new THREE.LineBasicMaterial({ color: COL.accent, transparent: true, opacity: 0.55 }))
+    );
+    const pickLabel = makeLabelSprite('Floor pickup');
+    pickLabel.position.set(PICKUP_BOX.x, 0.1, PICKUP_BOX.z + 0.35);
+    pickLabel.scale.set(0.6, 0.3, 1);
+    approachMark.add(pickLabel);
+    scene.add(approachMark);
+
+    const overlayMat = new THREE.MeshBasicMaterial({
+      color: 0x3b82f6,
+      transparent: true,
+      opacity: 0.08,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const overlay = new THREE.Mesh(new THREE.PlaneGeometry(DOOR.w, DOOR.h), overlayMat);
+    overlay.position.copy(doorGroup.position);
+    overlay.position.y = DOOR.h / 2;
+    overlay.visible = false;
+    overlay.userData = { hoverable: false };
+    scene.add(overlay);
+
+    const showDoor = document.getElementById('showDoor');
+    const doorOverlay = document.getElementById('doorOverlay');
+    const boxTilt = document.getElementById('boxTilt');
+    const tiltSlider = document.getElementById('tiltSlider');
+    const showEnvelope = document.getElementById('showEnvelope');
+    const showDims = document.getElementById('showDims');
+    const hoverRefs = document.getElementById('hoverRefs');
+    const demoRun = document.getElementById('demoRun');
+    const demoStop = document.getElementById('demoStop');
+    const demoSpeed = document.getElementById('demoSpeed');
+    const followRobot = document.getElementById('followRobot');
+    const demoStatus = document.getElementById('demoStatus');
+
+    let demoTiltRad = 0;
+    let demoBellyZ = 0.04;
+    let suppressManualTilt = false;
+
+    const IDLE_POSE = { x: -1.75, z: 1.35, rot: 0 };
+    const DOOR_LINE = { x: 0.35, z: 0.18, rot: -Math.PI * 0.42 };
+    const DOOR_PASSED = { x: 0.95, z: 0.12, rot: DOOR_LINE.rot };
+    const DROP_SPOT = { x: 0.55, z: -1.55, rot: Math.PI * 0.92 };
+    const RETURN_POSE = { x: -1.75, z: 1.35, rot: 0 };
+
+    const initialRobot = { x: robot.position.x, y: robot.position.y, z: robot.position.z, rot: robot.rotation.y };
+
+    function applyTilt() {
+      if (suppressManualTilt) {
+        bellyGroup.rotation.x = -demoTiltRad;
+        bellyGroup.position.z = demoBellyZ;
+        return;
+      }
+      const deg = boxTilt.checked ? Math.max(Number(tiltSlider.value), 18) : Number(tiltSlider.value);
+      if (boxTilt.checked && Number(tiltSlider.value) < 18) tiltSlider.value = '18';
+      const rad = (deg * Math.PI) / 180;
+      bellyGroup.rotation.x = -rad;
+      bellyGroup.position.z = 0.04 + Math.sin(rad) * 0.06;
+    }
+
+    function applyDemoBellyTilt(deg) {
+      demoTiltRad = (deg * Math.PI) / 180;
+      demoBellyZ = 0.04 + Math.sin(demoTiltRad) * 0.06;
+      applyTilt();
+    }
+
+    function lerpNum(a, b, t) {
+      return a + (b - a) * t;
+    }
+
+    function lerpAngle(a, b, t) {
+      let d = b - a;
+      while (d > Math.PI) d -= Math.PI * 2;
+      while (d < -Math.PI) d += Math.PI * 2;
+      return a + d * t;
+    }
+
+    function easeInOut(t) {
+      return t * t * (3 - 2 * t);
+    }
+
+    function setRobotPose(x, z, rot) {
+      robot.position.x = x;
+      robot.position.z = z;
+      robot.rotation.y = rot;
+    }
+
+    function angleDelta(a, b) {
+      let d = b - a;
+      while (d > Math.PI) d -= Math.PI * 2;
+      while (d < -Math.PI) d += Math.PI * 2;
+      return d;
+    }
+
+    function expandDrivePath(waypoints) {
+      const segs = [];
+      for (let i = 0; i < waypoints.length - 1; i++) {
+        const A = waypoints[i];
+        const B = waypoints[i + 1];
+        const dist = Math.hypot(B.x - A.x, B.z - A.z);
+        const driveRot = dist > 1e-4 ? Math.atan2(B.x - A.x, B.z - A.z) : A.rot;
+        let pose = { x: A.x, z: A.z, rot: A.rot };
+
+        if (Math.abs(angleDelta(pose.rot, driveRot)) > TURN_THRESHOLD) {
+          segs.push({ type: 'turn', from: { ...pose }, to: { x: pose.x, z: pose.z, rot: driveRot }, weight: 0.4 });
+          pose = { x: pose.x, z: pose.z, rot: driveRot };
+        }
+        if (dist > 1e-4) {
+          segs.push({
+            type: 'drive',
+            from: { x: pose.x, z: pose.z, rot: driveRot },
+            to: { x: B.x, z: B.z, rot: driveRot },
+            weight: Math.max(dist, 0.45),
+          });
+          pose = { x: B.x, z: B.z, rot: driveRot };
+        }
+        if (Math.abs(angleDelta(pose.rot, B.rot)) > TURN_THRESHOLD) {
+          segs.push({ type: 'turn', from: { ...pose }, to: { ...B }, weight: 0.4 });
+        } else if (dist <= 1e-4 && Math.abs(angleDelta(A.rot, B.rot)) > TURN_THRESHOLD) {
+          segs.push({ type: 'turn', from: { ...A }, to: { ...B }, weight: 0.4 });
+        }
+      }
+      return segs;
+    }
+
+    function beginDrivePath(waypoints) {
+      demo.pathSegs = expandDrivePath(waypoints);
+      demo.pathWeight = demo.pathSegs.reduce((s, seg) => s + seg.weight, 0) || 1;
+      const start = waypoints[0];
+      setRobotPose(start.x, start.z, start.rot);
+    }
+
+    function updateDrivePath(t) {
+      const target = easeInOut(THREE.MathUtils.clamp(t, 0, 1)) * demo.pathWeight;
+      let acc = 0;
+      for (let i = 0; i < demo.pathSegs.length; i++) {
+        const seg = demo.pathSegs[i];
+        if (acc + seg.weight >= target || i === demo.pathSegs.length - 1) {
+          const localT = seg.weight > 1e-6 ? (target - acc) / seg.weight : 1;
+          const e = easeInOut(THREE.MathUtils.clamp(localT, 0, 1));
+          if (seg.type === 'drive') {
+            setRobotPose(
+              lerpNum(seg.from.x, seg.to.x, e),
+              lerpNum(seg.from.z, seg.to.z, e),
+              seg.from.rot
+            );
+          } else {
+            setRobotPose(seg.from.x, seg.from.z, lerpAngle(seg.from.rot, seg.to.rot, e));
+          }
+          return;
+        }
+        acc += seg.weight;
+      }
+    }
+
+    const bellyCartonWorld = new THREE.Vector3();
+    const slideWorldScratch = new THREE.Vector3();
+
+    function bellyCartonWorldPos(target) {
+      bellyGroup.updateWorldMatrix(true, true);
+      return target.copy(BELLY_CARTON_LOCAL).applyMatrix4(bellyGroup.matrixWorld);
+    }
+
+    function lerpCartonInWorld(carton, fromWorld, toWorld, u) {
+      const e = easeInOut(THREE.MathUtils.clamp(u, 0, 1));
+      slideWorldScratch.lerpVectors(fromWorld, toWorld, e);
+      if (carton.parent !== scene) scene.attach(carton);
+      carton.position.copy(slideWorldScratch);
+    }
+
+    let carriedCarton = null;
+    let droppedOnPad = null;
+
+    function attachCartonToBelly(carton) {
+      if (!carton) return;
+      if (carton.parent !== bellyGroup) {
+        bellyGroup.attach(carton);
+        carton.position.copy(BELLY_CARTON_LOCAL);
+        carton.rotation.set(0, 0, 0);
+      }
+      carriedCarton = carton;
+    }
+
+    function releaseCartonToWorld(carton, x, z) {
+      if (!carton) return;
+      if (carton.parent !== scene) scene.attach(carton);
+      carton.position.set(x, 0, z);
+      carton.rotation.set(0, robot.rotation.y, 0);
+      carriedCarton = null;
+      return carton;
+    }
+
+    function resetDemoScene() {
+      robot.position.set(initialRobot.x, initialRobot.y, initialRobot.z);
+      robot.rotation.y = initialRobot.rot;
+      applyLiftRatio(1);
+      applyDemoBellyTilt(0);
+      bellyCarton.visible = true;
+      if (!bellyGroup.children.includes(bellyCarton)) {
+        bellyGroup.add(bellyCarton);
+        bellyCarton.position.copy(BELLY_CARTON_LOCAL);
+      }
+      floorPickupCarton.visible = false;
+      if (carriedCarton && carriedCarton !== bellyCarton) {
+        scene.remove(carriedCarton);
+        carriedCarton = null;
+      }
+      if (droppedOnPad) {
+        scene.remove(droppedOnPad);
+        droppedOnPad = null;
+      }
+    }
+
+    const pickupSlideFrom = new THREE.Vector3();
+    const dropSlideFrom = new THREE.Vector3();
+    const dropSlideTo = new THREE.Vector3();
+
+    const demo = {
+      running: false,
+      speed: 1,
+      phaseIndex: 0,
+      phaseElapsed: 0,
+      pathSegs: [],
+      pathWeight: 1,
+      pickupSliding: false,
+      pickupAttached: false,
+      dropSliding: false,
+      dropReleased: false,
+    };
+
+    function armPickupCarton() {
+      bellyCarton.visible = false;
+      bellyGroup.remove(bellyCarton);
+      floorPickupCarton.visible = true;
+      if (floorPickupCarton.parent !== scene) scene.attach(floorPickupCarton);
+      floorPickupCarton.position.set(PICKUP_BOX.x, 0, PICKUP_BOX.z);
+      carriedCarton = null;
+      demo.pickupSliding = false;
+      demo.pickupAttached = false;
+      demo.dropSliding = false;
+      demo.dropReleased = false;
+    }
+
+    const demoScript = [
+      {
+        name: 'Park',
+        duration: 3,
+        enter() {
+          setRobotPose(IDLE_POSE.x, IDLE_POSE.z, IDLE_POSE.rot);
+          applyLiftRatio(1);
+          applyDemoBellyTilt(0);
+        },
+        update() {},
+      },
+      {
+        name: 'Drive to pickup',
+        duration: 9,
+        enter() {
+          beginDrivePath([
+            IDLE_POSE,
+            { x: IDLE_POSE.x, z: 0.72, rot: IDLE_POSE.rot },
+            { x: -1.75, z: PICK_APPROACH.z, rot: IDLE_POSE.rot },
+            PICK_APPROACH,
+          ]);
+        },
+        update(t) {
+          updateDrivePath(t);
+        },
+      },
+      {
+        name: 'Lower & pick up',
+        duration: 9,
+        enter() {
+          setRobotPose(PICK_APPROACH.x, PICK_APPROACH.z, PICK_APPROACH.rot);
+          demo.pickupSliding = false;
+          demo.pickupAttached = false;
+        },
+        update(t) {
+          const phase = demoScript[demo.phaseIndex];
+          const slideFrac = PICKUP_SLIDE_S / phase.duration;
+          const gripT = 0.52;
+          const slideEnd = gripT + slideFrac;
+          if (t < 0.32) {
+            applyLiftRatio(lerpNum(1, 0.12, easeInOut(t / 0.32)));
+            applyDemoBellyTilt(0);
+          } else if (t < gripT) {
+            applyLiftRatio(0.12);
+            applyDemoBellyTilt(lerpNum(0, 8, easeInOut((t - 0.32) / (gripT - 0.32))));
+          } else if (t < slideEnd) {
+            applyLiftRatio(0.12);
+            applyDemoBellyTilt(8);
+            if (!demo.pickupSliding) {
+              demo.pickupSliding = true;
+              floorPickupCarton.updateWorldMatrix(true, true);
+              floorPickupCarton.getWorldPosition(pickupSlideFrom);
+              if (floorPickupCarton.parent !== scene) scene.attach(floorPickupCarton);
+              floorPickupCarton.visible = true;
+            }
+            const u = (t - gripT) / slideFrac;
+            bellyCartonWorldPos(bellyCartonWorld);
+            lerpCartonInWorld(floorPickupCarton, pickupSlideFrom, bellyCartonWorld, u);
+            if (u >= 1 && !demo.pickupAttached) {
+              attachCartonToBelly(floorPickupCarton);
+              demo.pickupAttached = true;
+            }
+          } else {
+            if (!demo.pickupAttached && demo.pickupSliding) {
+              attachCartonToBelly(floorPickupCarton);
+              demo.pickupAttached = true;
+            }
+            const liftT = (t - slideEnd) / Math.max(1 - slideEnd, 0.01);
+            applyLiftRatio(lerpNum(0.12, 0.85, easeInOut(liftT)));
+            applyDemoBellyTilt(lerpNum(8, 0, easeInOut(liftT)));
+          }
+        },
+      },
+      {
+        name: 'Carry to door',
+        duration: 9,
+        enter() {
+          applyLiftRatio(0.85);
+          beginDrivePath([
+            PICK_APPROACH,
+            { x: -0.55, z: PICK_APPROACH.z, rot: PICK_APPROACH.rot },
+            { x: -0.55, z: 0.42, rot: PICK_APPROACH.rot },
+            DOOR_LINE,
+          ]);
+        },
+        update(t) {
+          updateDrivePath(t);
+        },
+      },
+      {
+        name: 'Door clearance tilt',
+        duration: 7,
+        enter() {
+          setRobotPose(DOOR_LINE.x, DOOR_LINE.z, DOOR_LINE.rot);
+        },
+        update(t) {
+          const tiltT = t < 0.25 ? t / 0.25 : t > 0.75 ? (1 - t) / 0.25 : 1;
+          applyDemoBellyTilt(lerpNum(0, 22, easeInOut(THREE.MathUtils.clamp(tiltT, 0, 1))));
+          if (t > 0.2) {
+            const localT = (t - 0.2) / 0.55;
+            setRobotPose(
+              lerpNum(DOOR_LINE.x, DOOR_PASSED.x, easeInOut(localT)),
+              lerpNum(DOOR_LINE.z, DOOR_PASSED.z, easeInOut(localT)),
+              DOOR_LINE.rot
+            );
+          }
+        },
+      },
+      {
+        name: 'Drive to drop zone',
+        duration: 7,
+        enter() {
+          applyDemoBellyTilt(0);
+          beginDrivePath([
+            DOOR_PASSED,
+            { x: DOOR_PASSED.x, z: -0.35, rot: DOOR_PASSED.rot },
+            { x: DROP_SPOT.x, z: -0.35, rot: DROP_SPOT.rot },
+            DROP_SPOT,
+          ]);
+        },
+        update(t) {
+          updateDrivePath(t);
+        },
+      },
+      {
+        name: 'Drop off',
+        duration: 8,
+        enter() {
+          setRobotPose(DROP_SPOT.x, DROP_SPOT.z, DROP_SPOT.rot);
+          demo.dropSliding = false;
+          demo.dropReleased = false;
+        },
+        update(t) {
+          const phase = demoScript[demo.phaseIndex];
+          const slideFrac = DROP_SLIDE_S / phase.duration;
+          const slideStart = 0.38;
+          const slideEnd = slideStart + slideFrac;
+          if (t < slideStart) {
+            applyLiftRatio(lerpNum(0.85, 0.15, easeInOut(t / slideStart)));
+            applyDemoBellyTilt(0);
+          } else if (t < slideEnd) {
+            applyLiftRatio(0.15);
+            if (carriedCarton && !demo.dropSliding) {
+              demo.dropSliding = true;
+              carriedCarton.updateWorldMatrix(true, true);
+              carriedCarton.getWorldPosition(dropSlideFrom);
+              if (carriedCarton.parent !== scene) scene.attach(carriedCarton);
+              dropSlideTo.set(dropZone.position.x, 0, dropZone.position.z);
+            }
+            if (demo.dropSliding && carriedCarton) {
+              const u = (t - slideStart) / slideFrac;
+              lerpCartonInWorld(carriedCarton, dropSlideFrom, dropSlideTo, u);
+            }
+          } else if (!demo.dropReleased) {
+            demo.dropReleased = true;
+            if (carriedCarton) {
+              droppedOnPad = releaseCartonToWorld(carriedCarton, dropZone.position.x, dropZone.position.z);
+            }
+          } else {
+            applyLiftRatio(lerpNum(0.15, 1, easeInOut((t - slideEnd) / Math.max(1 - slideEnd, 0.05))));
+          }
+        },
+      },
+      {
+        name: 'Return & loop',
+        duration: 9,
+        enter() {
+          beginDrivePath([
+            DROP_SPOT,
+            { x: DROP_SPOT.x, z: 0.15, rot: DROP_SPOT.rot },
+            { x: 0.2, z: 0.9, rot: -Math.PI * 0.15 },
+            RETURN_POSE,
+          ]);
+        },
+        update(t) {
+          updateDrivePath(t);
+        },
+      },
+    ];
+
+    const DEMO_CYCLE_S = demoScript.reduce((s, p) => s + p.duration, 0);
+
+    function setDemoUi(running) {
+      demoRun.disabled = running;
+      demoStop.disabled = !running;
+    }
+
+    function beginDemo() {
+      if (demo.running) return;
+      suppressManualTilt = true;
+      setHoverUI(null, 0, 0);
+      armPickupCarton();
+      robot.position.set(IDLE_POSE.x, 0, IDLE_POSE.z);
+      robot.rotation.y = IDLE_POSE.rot;
+      applyLiftRatio(1);
+      applyDemoBellyTilt(0);
+      demo.running = true;
+      demo.phaseIndex = 0;
+      demo.phaseElapsed = 0;
+      demo.speed = Number(demoSpeed.value);
+      demoScript[0].enter?.();
+      setDemoUi(true);
+      demoStatus.textContent = `Running — ${demoScript[0].name} (1× ≈ ${Math.round(DEMO_CYCLE_S)} s)`;
+    }
+
+    function stopDemo() {
+      demo.running = false;
+      suppressManualTilt = false;
+      demo.phaseIndex = 0;
+      demo.phaseElapsed = 0;
+      resetDemoScene();
+      setDemoUi(false);
+      demoStatus.textContent = 'Stopped';
+    }
+
+    function advanceDemo(dt) {
+      if (!demo.running) return;
+      demo.speed = Number(demoSpeed.value);
+      const phase = demoScript[demo.phaseIndex];
+      demo.phaseElapsed += dt * demo.speed;
+      const t = THREE.MathUtils.clamp(demo.phaseElapsed / phase.duration, 0, 1);
+      phase.update(t);
+      demoStatus.textContent = `Running — ${phase.name} · ${Math.round(t * 100)}% · ${demo.speed.toFixed(1)}×`;
+
+      if (demo.phaseElapsed >= phase.duration) {
+        demo.phaseIndex += 1;
+        if (demo.phaseIndex >= demoScript.length) {
+          demo.phaseIndex = 0;
+          armPickupCarton();
+          robot.position.set(IDLE_POSE.x, 0, IDLE_POSE.z);
+          robot.rotation.y = IDLE_POSE.rot;
+          if (droppedOnPad) {
+            scene.remove(droppedOnPad);
+            droppedOnPad = null;
+          }
+        }
+        demo.phaseElapsed = 0;
+        demoScript[demo.phaseIndex].enter?.();
+      }
+    }
+
+    demoRun.addEventListener('click', beginDemo);
+    demoStop.addEventListener('click', stopDemo);
+
+    showDoor.addEventListener('change', () => { doorGroup.visible = showDoor.checked; });
+    doorOverlay.addEventListener('change', () => { overlay.visible = doorOverlay.checked; });
+    boxTilt.addEventListener('change', () => {
+      if (boxTilt.checked) tiltSlider.value = '22';
+      applyTilt();
+    });
+    tiltSlider.addEventListener('input', applyTilt);
+    showEnvelope.addEventListener('change', () => { envelope.visible = showEnvelope.checked; });
+    showDims.addEventListener('change', () => { dimGroup.visible = showDims.checked; });
+
+    hoverRefs.addEventListener('change', () => {
+      const on = hoverRefs.checked;
+      envelope.userData.hoverable = on;
+      doorGroup.traverse((o) => {
+        if (o.isMesh && o.userData.label) o.userData.hoverable = on;
+      });
+    });
+
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+    let hoverThrottle = 0;
+  const HOVER_MS = 48;
+
+    function findHoverMeta(obj) {
+      let cur = obj;
+      while (cur) {
+        if (cur.userData && cur.userData.hoverable && cur.userData.label) {
+          return cur.userData;
+        }
+        cur = cur.parent;
+      }
+      return null;
+    }
+
+    function setHoverUI(meta, clientX, clientY) {
+      if (!meta) {
+        partTip.style.display = 'none';
+        partFixLabel.textContent = '—';
+        partFixMaterial.textContent = 'Hover a robot part';
+        partFixNote.textContent = '';
+        return;
+      }
+      partTip.style.display = 'block';
+      const pad = 14;
+      let left = clientX + pad;
+      let top = clientY + pad;
+      if (left + 280 > innerWidth) left = clientX - 280 - pad;
+      if (top + 100 > innerHeight) top = clientY - 100 - pad;
+      partTip.style.left = `${left}px`;
+      partTip.style.top = `${top}px`;
+      partTipLabel.textContent = meta.label;
+      partTipMaterial.textContent = meta.material;
+      partTipNote.textContent = meta.note || '';
+      partFixLabel.textContent = meta.label;
+      partFixMaterial.textContent = meta.material;
+      partFixNote.textContent = meta.note || '';
+    }
+
+    function onPointerMove(ev) {
+      if (demo.running) {
+        setHoverUI(null, 0, 0);
+        return;
+      }
+      const now = performance.now();
+      if (now - hoverThrottle < HOVER_MS) return;
+      hoverThrottle = now;
+      const rect = renderer.domElement.getBoundingClientRect();
+      pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+      pointer.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+      const hits = raycaster.intersectObjects([robot], true);
+      let meta = null;
+      for (const h of hits) {
+        meta = findHoverMeta(h.object);
+        if (meta) break;
+      }
+      if (!meta && hoverRefs.checked) {
+        const refHits = raycaster.intersectObjects([envelope, doorGroup], true);
+        for (const h of refHits) {
+          meta = findHoverMeta(h.object);
+          if (meta) break;
+        }
+      }
+      setHoverUI(meta, ev.clientX, ev.clientY);
+    }
+
+    renderer.domElement.addEventListener('pointermove', onPointerMove);
+    renderer.domElement.addEventListener('pointerleave', () => setHoverUI(null, 0, 0));
+
+    function onResize() {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    }
+    addEventListener('resize', onResize);
+
+    const clock = new THREE.Clock();
+    const followTarget = new THREE.Vector3();
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const dt = Math.min(clock.getDelta(), 0.05);
+      advanceDemo(dt);
+      if (demo.running && followRobot.checked) {
+        robot.getWorldPosition(followTarget);
+        followTarget.y = 1.05;
+        controls.target.lerp(followTarget, 0.06);
+      }
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    animate();
+  </script>
+</body>
+</html>
