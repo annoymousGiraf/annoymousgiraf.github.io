@@ -505,13 +505,18 @@
       bellyGroup.add(sidePad);
     });
 
+    const cartonPivot = new THREE.Group();
+    cartonPivot.name = 'cartonPivot';
+    cartonPivot.position.set(0, -0.06, 0.12);
+    bellyGroup.add(cartonPivot);
+
     const clampLip = new THREE.Mesh(
       new THREE.BoxGeometry(0.5, 0.06, 0.04),
       mat(COL.accent, { roughness: 0.5 })
     );
-    clampLip.position.set(0, -0.08, 0.24);
+    clampLip.position.set(0, -0.02, 0.12);
     tagPart(clampLip, 'Clamp lip bar', 'Nylon facing on steel edge', 'Front retention lip for forward carry');
-    bellyGroup.add(clampLip);
+    cartonPivot.add(clampLip);
 
     function buildCarton(name = 'carton') {
       const carton = new THREE.Group();
@@ -547,11 +552,11 @@
       return carton;
     }
 
-    const BELLY_CARTON_LOCAL = new THREE.Vector3(0, 0.02, 0.14);
+    const BELLY_CARTON_LOCAL = new THREE.Vector3(0, 0.08, 0.02);
 
     const bellyCarton = buildCarton('bellyCarton');
     bellyCarton.position.copy(BELLY_CARTON_LOCAL);
-    bellyGroup.add(bellyCarton);
+    cartonPivot.add(bellyCarton);
 
     const SENSOR_STACK_BASE = liftTop + 0.47;
     const NECK_H = 0.26;
@@ -813,7 +818,8 @@
     const followRobot = document.getElementById('followRobot');
     const demoStatus = document.getElementById('demoStatus');
 
-    let demoTiltRad = 0;
+    const FRAME_TILT_MAX_RAD = (8 * Math.PI) / 180;
+    let demoTiltDeg = 0;
     let demoBellyZ = 0.04;
     let suppressManualTilt = false;
 
@@ -825,22 +831,36 @@
 
     const initialRobot = { x: robot.position.x, y: robot.position.y, z: robot.position.z, rot: robot.rotation.y };
 
+    function syncEnvelopeTiltVisual(cartonDeg) {
+      const fade = 1 - THREE.MathUtils.clamp((cartonDeg - 18) / 17, 0, 1) * 0.55;
+      envelope.material.opacity = 0.12 * fade;
+      envelopeEdges.material.opacity = 0.55 * fade;
+    }
+
     function applyTilt() {
+      let cartonDeg;
       if (suppressManualTilt) {
-        bellyGroup.rotation.x = -demoTiltRad;
-        bellyGroup.position.z = demoBellyZ;
-        return;
+        cartonDeg = demoTiltDeg;
+      } else {
+        cartonDeg = boxTilt.checked ? Math.max(Number(tiltSlider.value), 18) : Number(tiltSlider.value);
+        if (boxTilt.checked && Number(tiltSlider.value) < 18) tiltSlider.value = '18';
       }
-      const deg = boxTilt.checked ? Math.max(Number(tiltSlider.value), 18) : Number(tiltSlider.value);
-      if (boxTilt.checked && Number(tiltSlider.value) < 18) tiltSlider.value = '18';
-      const rad = (deg * Math.PI) / 180;
-      bellyGroup.rotation.x = -rad;
-      bellyGroup.position.z = 0.04 + Math.sin(rad) * 0.06;
+      const cartonRad = (cartonDeg * Math.PI) / 180;
+      const frameRad = Math.min(cartonRad, FRAME_TILT_MAX_RAD);
+
+      cartonPivot.rotation.x = -cartonRad;
+      bellyGroup.rotation.x = -frameRad;
+      bellyGroup.position.z = suppressManualTilt
+        ? demoBellyZ
+        : 0.04 + Math.sin(frameRad) * 0.04;
+
+      syncEnvelopeTiltVisual(cartonDeg);
     }
 
     function applyDemoBellyTilt(deg) {
-      demoTiltRad = (deg * Math.PI) / 180;
-      demoBellyZ = 0.04 + Math.sin(demoTiltRad) * 0.06;
+      demoTiltDeg = deg;
+      const frameRad = Math.min((deg * Math.PI) / 180, FRAME_TILT_MAX_RAD);
+      demoBellyZ = 0.04 + Math.sin(frameRad) * 0.04;
       applyTilt();
     }
 
@@ -937,8 +957,8 @@
     const slideWorldScratch = new THREE.Vector3();
 
     function bellyCartonWorldPos(target) {
-      bellyGroup.updateWorldMatrix(true, true);
-      return target.copy(BELLY_CARTON_LOCAL).applyMatrix4(bellyGroup.matrixWorld);
+      cartonPivot.updateWorldMatrix(true, true);
+      return target.copy(BELLY_CARTON_LOCAL).applyMatrix4(cartonPivot.matrixWorld);
     }
 
     function lerpCartonInWorld(carton, fromWorld, toWorld, u) {
@@ -953,8 +973,8 @@
 
     function attachCartonToBelly(carton) {
       if (!carton) return;
-      if (carton.parent !== bellyGroup) {
-        bellyGroup.attach(carton);
+      if (carton.parent !== cartonPivot) {
+        cartonPivot.attach(carton);
         carton.position.copy(BELLY_CARTON_LOCAL);
         carton.rotation.set(0, 0, 0);
       }
@@ -976,8 +996,8 @@
       applyLiftRatio(1);
       applyDemoBellyTilt(0);
       bellyCarton.visible = true;
-      if (!bellyGroup.children.includes(bellyCarton)) {
-        bellyGroup.add(bellyCarton);
+      if (!cartonPivot.children.includes(bellyCarton)) {
+        cartonPivot.add(bellyCarton);
         bellyCarton.position.copy(BELLY_CARTON_LOCAL);
       }
       floorPickupCarton.visible = false;
@@ -1010,7 +1030,7 @@
 
     function armPickupCarton() {
       bellyCarton.visible = false;
-      bellyGroup.remove(bellyCarton);
+      cartonPivot.remove(bellyCarton);
       floorPickupCarton.visible = true;
       if (floorPickupCarton.parent !== scene) scene.attach(floorPickupCarton);
       floorPickupCarton.position.set(PICKUP_BOX.x, 0, PICKUP_BOX.z);
